@@ -205,10 +205,10 @@ const ytdlpInitPromise = ensureYtdlp();
 // ==========================================
 
 /**
- * POST /api/analyze
+ * POST /api/extract
  * Fetches youtube video metadata using yt-dlp using flat-playlist or full query options
  */
-app.post('/api/analyze', async (req, res) => {
+app.post('/api/extract', async (req, res) => {
   const { url, cookies } = req.body;
   if (!url) {
     return res.status(400).json({ error: 'É necessário fornecer um URL do YouTube.' });
@@ -385,10 +385,10 @@ app.post('/api/analyze', async (req, res) => {
 });
 
 /**
- * POST /api/download
+ * POST /api/process
  * Launches download background job
  */
-app.post('/api/download', (req, res) => {
+app.post('/api/process', (req, res) => {
   const { url, format, selectedVideos, title, cookies } = req.body;
   
   console.log(`[LOGGER-SERVER] New download job requested -> format: "${format}", isPlaylist: ${Array.isArray(selectedVideos) && selectedVideos.length > 0}, URL: "${url}"`);

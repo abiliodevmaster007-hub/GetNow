@@ -263,8 +263,8 @@ export default function App() {
     setMetadata(null);
 
     try {
-      console.log('[LOGGER-CLIENT] Sending POST request to /api/analyze...');
-      const response = await fetch('/api/analyze', {
+      console.log('[LOGGER-CLIENT] Sending POST request to /api/extract...');
+      const response = await fetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: urlInput.trim(), cookies: youtubeCookies })
@@ -288,7 +288,7 @@ export default function App() {
         const cleanText = (text.includes('<html') || text.includes('<!DOCTYPE') || text.includes('<div'))
           ? `O servidor retornou uma resposta HTML em vez de JSON (Status: ${response.status}). O serviço no Render poderá estar temporariamente sobrecarregado ou a reiniciar. Por favor, tente novamente.`
           : text;
-        data = { error: cleanText || `Resposta inválida do servidor (Código: ${response.status})` };
+        throw new Error(cleanText || `Resposta inválida do servidor (Código: ${response.status})`);
       }
 
       if (!response.ok) {
@@ -333,7 +333,7 @@ export default function App() {
     }
 
     try {
-      const response = await fetch('/api/download', {
+      const response = await fetch('/api/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -352,7 +352,7 @@ export default function App() {
         const cleanText = (text.includes('<html') || text.includes('<!DOCTYPE') || text.includes('<div'))
           ? `O servidor retornou uma resposta de erro HTML em vez de JSON (Status: ${response.status}). O serviço no Render poderá estar a reiniciar ou ocupado. Recarregue a página antes de tentar de novo.`
           : text;
-        data = { error: cleanText || `Resposta inválida do servidor (Código: ${response.status})` };
+        throw new Error(cleanText || `Resposta inválida do servidor (Código: ${response.status})`);
       }
 
       if (!response.ok) {
