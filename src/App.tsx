@@ -19,7 +19,8 @@ import {
   Github,
   Play,
   CheckCircle2,
-  ListRestart
+  ListRestart,
+  X
 } from 'lucide-react';
 
 interface PlaylistItem {
@@ -85,6 +86,7 @@ export default function App() {
   const [step, setStep] = useState<'idle' | 'analyzing' | 'ready'>('idle');
   const [loadingMsg, setLoadingMsg] = useState('');
   const [metadata, setMetadata] = useState<MetadataResult | null>(null);
+  const [previewVideoId, setPreviewVideoId] = useState<string | null>(null);
   
   // Checklist for playlists
   const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([]);
@@ -240,33 +242,49 @@ export default function App() {
 
   // URL extraction action
   const handleAnalyze = async () => {
+    console.log(`[LOGGER-CLIENT] Initiating YouTube URL Analysis: "${urlInput.trim()}"`);
+    if (youtubeCookies.trim()) {
+      console.log(`[LOGGER-CLIENT] Custom Netscape YouTube cookies are present (${youtubeCookies.trim().length} chars)`);
+    } else {
+      console.log(`[LOGGER-CLIENT] No custom YouTube cookies provided.`);
+    }
+
     if (!urlInput.trim()) {
       setUrlError('Insira um link do YouTube antes de prosseguir.');
       return;
     }
-    if (urlError) return;
+    if (urlError) {
+      console.warn(`[LOGGER-CLIENT] Aborting analysis due to active URL validation error: "${urlError}"`);
+      return;
+    }
 
     setStep('analyzing');
     setLoadingMsg('A analisar o link do YouTube...');
     setMetadata(null);
 
     try {
+      console.log('[LOGGER-CLIENT] Sending POST request to /api/analyze...');
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: urlInput.trim(), cookies: youtubeCookies })
       });
 
+      console.log(`[LOGGER-CLIENT] Response received. HTTP status: ${response.status} (${response.statusText})`);
+
       let data: any;
       const contentType = response.headers.get('content-type');
       if (contentType && contentType.includes('application/json')) {
         try {
           data = await response.json();
-        } catch (_) {
+          console.log(`[LOGGER-CLIENT] Successfully parsed response JSON payload:`, data);
+        } catch (jsonErr: any) {
+          console.error(`[LOGGER-CLIENT] JSON decoding crash: ${jsonErr.message}`);
           data = { error: 'O servidor retornou um JSON incompleto ou corrompido.' };
         }
       } else {
         const text = await response.text();
+        console.warn(`[LOGGER-CLIENT] Response header did not indicate application/json. Raw text content (first 300 chars): "${text.substring(0, 300)}"`);
         const cleanText = (text.includes('<html') || text.includes('<!DOCTYPE') || text.includes('<div'))
           ? `O servidor retornou uma resposta HTML em vez de JSON (Status: ${response.status}). O serviço no Render poderá estar temporariamente sobrecarregado ou a reiniciar. Por favor, tente novamente.`
           : text;
@@ -274,14 +292,17 @@ export default function App() {
       }
 
       if (!response.ok) {
+        console.error(`[LOGGER-CLIENT] Analysis failed on backend: "${data.error || 'Unknown Error'}"`);
         throw new Error(data.error || 'Não foi possível analisar o URL do YouTube.');
       }
 
+      console.log(`[LOGGER-CLIENT] Metadata successfully indexed. Asset title: "${data.title}", Type: "${data.type}"`);
       setMetadata(data);
       setStep('ready');
 
       // If playlist type, select all entries by default
       if (data.type === 'playlist' && Array.isArray(data.entries)) {
+        console.log(`[LOGGER-CLIENT] Auto-selecting all ${data.entries.length} videos from the playlist.`);
         setSelectedVideoIds(data.entries.map((item: PlaylistItem) => item.id));
       }
     } catch (err: any) {
@@ -892,19 +913,31 @@ export default function App() {
                   {/* Content Header Grid */}
                   <div className="flex flex-col md:flex-row gap-6">
                     <div className="relative flex-shrink-0 mx-auto md:mx-0 w-full md:w-[240px]">
-                      <div className="w-full aspect-video bg-black rounded-xl border border-white/10 overflow-hidden relative group shadow-lg">
+                      <div 
+                        onClick={() => {
+                          if (metadata.type === 'single') {
+                            setPreviewVideoId(metadata.id);
+                          } else if (metadata.entries && metadata.entries.length > 0) {
+                            setPreviewVideoId(metadata.entries[0].id);
+                          }
+                        }}
+                        className="w-full aspect-video bg-black rounded-xl border border-white/10 overflow-hidden relative group shadow-lg cursor-pointer"
+                        title="Clique para assistir à pré-visualização do vídeo"
+                      >
                         <img 
                           src={metadata.thumbnail} 
                           alt="Thumbnail" 
+                          referrerPolicy="no-referrer"
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                         />
-                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Play className="w-8 h-20 text-white fill-white" />
+                        <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Play className="w-10 h-10 text-white fill-white mb-1 drop-shadow" />
+                          <span className="text-[10px] text-white font-bold uppercase tracking-wider bg-red-600 px-2 py-0.5 rounded shadow">Assistir</span>
                         </div>
                       </div>
                       
                       {metadata.duration && (
-                        <span className="absolute bottom-2 right-2 bg-black/80 text-[10px] px-2 py-0.5 rounded-md font-mono text-white font-bold tracking-wider">
+                        <span className="absolute bottom-2 right-2 bg-black/80 text-[10px] px-2 py-0.5 rounded-md font-mono text-white font-bold tracking-wider pointer-events-none">
                           {metadata.duration}
                         </span>
                       )}
@@ -912,7 +945,9 @@ export default function App() {
 
                     <div className="flex-1 space-y-3 py-1 text-center md:text-left">
                       <div className="flex flex-col md:flex-row items-center md:items-start justify-between gap-2">
-                        <h1 className="text-lg font-extrabold leading-tight line-clamp-2 text-gray-100 hover:text-white transition-colors">
+                        <h1 className={`text-lg font-extrabold leading-tight line-clamp-2 transition-colors ${
+                          isDarkMode ? 'text-gray-100 hover:text-white' : 'text-gray-900 hover:text-red-700'
+                        }`}>
                           {metadata.title}
                         </h1>
                         <span className={`px-2.5 py-1 rounded text-[10px] uppercase font-bold tracking-widest ${
@@ -922,18 +957,22 @@ export default function App() {
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap items-center justify-center md:justify-start gap-3 text-xs text-gray-400">
+                      <div className={`flex flex-wrap items-center justify-center md:justify-start gap-3 text-xs ${
+                        isDarkMode ? 'text-gray-400' : 'text-gray-600'
+                      }`}>
                         {metadata.channel && (
-                          <span className="flex items-center gap-1.5 font-medium text-gray-300">
-                            <span className="w-2 h-2 rounded-full bg-red-600 inline-block"></span>
+                          <span className={`flex items-center gap-1.5 font-semibold ${
+                            isDarkMode ? 'text-gray-300' : 'text-gray-700'
+                          }`}>
+                            <span className="w-2.5 h-2.5 rounded-full bg-red-600 inline-block shadow-sm"></span>
                             {metadata.channel}
                           </span>
                         )}
                         {metadata.channel && <span>•</span>}
                         {metadata.type === 'playlist' ? (
-                          <span className="font-semibold text-amber-500">{metadata.totalVideos} Vídeos Indicados</span>
+                          <span className="font-bold text-amber-500">{metadata.totalVideos} Vídeos Indicados</span>
                         ) : (
-                          <span>Duração: <strong className="text-gray-200">{metadata.duration}</strong></span>
+                          <span>Duração: <strong className={isDarkMode ? 'text-gray-200' : 'text-gray-900 font-bold'}>{metadata.duration}</strong></span>
                         )}
                       </div>
 
@@ -998,9 +1037,25 @@ export default function App() {
                                   {item.title}
                                 </span>
                               </div>
-                              <span className="text-[10px] font-mono text-gray-500">
-                                {item.duration}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[10px] font-mono ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                  {item.duration}
+                                </span>
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation(); // prevent checklist selection toggle
+                                    setPreviewVideoId(item.id);
+                                  }}
+                                  className={`p-1 rounded transition-colors group/btn ${
+                                    isDarkMode 
+                                      ? 'bg-white/5 border border-white/5 hover:bg-red-600/20 hover:border-red-600 text-gray-400 hover:text-red-500' 
+                                      : 'bg-gray-100 border border-gray-200 hover:bg-red-100 hover:border-red-300 text-gray-600 hover:text-red-600'
+                                  }`}
+                                  title="Assistir pré-visualização deste vídeo"
+                                >
+                                  <Play className="w-3 h-3 fill-current" />
+                                </button>
+                              </div>
                             </div>
                           );
                         })}
@@ -1123,6 +1178,56 @@ export default function App() {
           </span>
         </div>
       </footer>
+
+      {/* Video Preview Modal overlay */}
+      {previewVideoId && (
+        <div className="fixed inset-0 z-[999] flex items-center justify-center p-4">
+          {/* Blur Backdrop */}
+          <div 
+            className="absolute inset-0 bg-black/85 backdrop-blur-sm transition-all" 
+            onClick={() => setPreviewVideoId(null)}
+          />
+          {/* Modal Container */}
+          <div className={`relative w-full max-w-3xl rounded-2xl overflow-hidden border shadow-2xl transition-all scale-100 ${
+            isDarkMode ? 'bg-[#121212] border-white/10 text-white shadow-red-950/20' : 'bg-white border-gray-200 text-gray-900 shadow-gray-400/50'
+          }`}>
+            {/* Modal Header bar */}
+            <div className={`p-4 flex items-center justify-between border-b ${
+              isDarkMode ? 'border-white/5' : 'border-gray-100'
+            }`}>
+              <div className="flex items-center gap-2">
+                <Play className="w-4 h-4 text-red-600 fill-red-600 animate-pulse" />
+                <span className="font-extrabold text-xs uppercase tracking-wider text-red-600">Pré-visualização do YouTube</span>
+              </div>
+              <button 
+                onClick={() => setPreviewVideoId(null)}
+                className={`p-1.5 rounded-lg transition-colors ${
+                  isDarkMode ? 'text-gray-400 hover:text-white hover:bg-white/5' : 'text-gray-500 hover:text-black hover:bg-gray-100'
+                }`}
+                title="Fechar reprodutor"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            {/* Embed Video Iframe window wrapper */}
+            <div className="w-full aspect-video bg-black relative">
+              <iframe 
+                src={`https://www.youtube.com/embed/${previewVideoId}?autoplay=1`} 
+                title="Reprodutor YouTube GetNow"
+                className="w-full h-full border-0 absolute inset-0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+              />
+            </div>
+            {/* Modal Instruction info bar */}
+            <div className={`p-3 text-center text-[10px] uppercase tracking-wider font-semibold ${
+              isDarkMode ? 'bg-[#1c1c1c]/40 text-gray-400' : 'bg-gray-50 text-gray-500'
+            }`}>
+              Ao fechar esta janela, a reprodução será finalizada.
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

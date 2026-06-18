@@ -254,13 +254,17 @@ app.post('/api/analyze', async (req, res) => {
 
     args.push(url);
 
+    console.log(`[LOGGER-SERVER] Prepared yt-dlp arguments:`, args.map(a => a.includes('cookies') ? '"<hidden-cookies-path>"' : a).join(' '));
+
     // Dynamic clean-up callback
     const cleanupCookies = () => {
       if (cookiesPath && fs.existsSync(cookiesPath)) {
         try {
           fs.unlinkSync(cookiesPath);
-          console.log(`Temporary cookies file wiped: ${cookiesPath}`);
-        } catch (_) {}
+          console.log(`[LOGGER-SERVER] Temporary cookies file wiped: ${cookiesPath}`);
+        } catch (cErr: any) {
+          console.error(`[LOGGER-SERVER] Could not remove temporary cookies file:`, cErr.message);
+        }
       }
     };
     
@@ -270,14 +274,18 @@ app.post('/api/analyze', async (req, res) => {
     let completed = false;
     
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      console.log(`[LOGGER-SERVER] yt-dlp STDOUT chunk (${text.length} chars)`);
     });
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      console.warn(`[LOGGER-SERVER] yt-dlp STDERR chunk: ${text.trim()}`);
     });
     
     child.on('error', (err) => {
-      console.error('Failed to start yt-dlp child process:', err);
+      console.error('[LOGGER-SERVER] Critical error starting yt-dlp child process:', err);
       completed = true;
       cleanupCookies();
       if (!res.headersSent) {
@@ -292,8 +300,12 @@ app.post('/api/analyze', async (req, res) => {
       if (completed) return;
       completed = true;
       
+      console.log(`[LOGGER-SERVER] yt-dlp analysis closed with exit code: ${code}`);
+      console.log(`[LOGGER-SERVER] Combined STDOUT length: ${stdout.length} chars`);
+      console.log(`[LOGGER-SERVER] Combined STDERR length: ${stderr.length} chars`);
+      
       if (code !== 0) {
-        console.error(`yt-dlp analysis returned exit code: ${code}. Error details: ${stderr}`);
+        console.error(`[LOGGER-SERVER] yt-dlp exited with non-zero code ${code}. Stderr content: ${stderr}`);
         
         let userMessage = 'Ocorreu um erro ao tentar obter informações deste link.';
         if (stderr.includes('Incomplete connection') || stderr.includes('HTTP Error')) {
@@ -304,6 +316,8 @@ app.post('/api/analyze', async (req, res) => {
           userMessage = 'Vídeo indisponível ou excluído do YouTube.';
         } else if (stderr.includes('playlist does not exist')) {
           userMessage = 'A playlist fornecida não existe ou é privada.';
+        } else if (stderr.includes('confirm you are not a bot') || stderr.includes('Sign in to confirm you’re not a bot')) {
+          userMessage = 'O YouTube bloqueou este pedido devido a deteção de bot. Use a opção "Bypass / Cookies" abaixo para resolver.';
         }
         
         return res.status(500).json({ 
@@ -313,8 +327,14 @@ app.post('/api/analyze', async (req, res) => {
       }
       
       try {
+        if (!stdout.trim()) {
+          throw new Error('O yt-dlp fechou sem erros, mas obteve uma saída em branco.');
+        }
+        
+        console.log(`[LOGGER-SERVER] Attempting to parse JSON output (First 150 chars): "${stdout.trim().substring(0, 150)}..."`);
         const rawJson = JSON.parse(stdout);
         const type = rawJson._type === 'playlist' ? 'playlist' : 'single';
+        console.log(`[LOGGER-SERVER] Successfully parsed meta-JSON. Asset detected Type: "${type}", Title: "${rawJson.title || 'Untitled'}"`);
         
         if (type === 'playlist') {
           const playlistEntries = (rawJson.entries || []).map((entry: any) => ({
@@ -326,6 +346,7 @@ app.post('/api/analyze', async (req, res) => {
             thumbnail: `https://img.youtube.com/vi/${entry.id}/mqdefault.jpg`
           }));
           
+          console.log(`[LOGGER-SERVER] Returning playlist meta-response containing ${playlistEntries.length} items`);
           return res.json({
             type: 'playlist',
             id: rawJson.id,
@@ -335,6 +356,7 @@ app.post('/api/analyze', async (req, res) => {
             entries: playlistEntries
           });
         } else {
+          console.log(`[LOGGER-SERVER] Returning single video meta-response for video ID: ${rawJson.id}`);
           return res.json({
             type: 'single',
             id: rawJson.id,
@@ -346,9 +368,14 @@ app.post('/api/analyze', async (req, res) => {
             url: url
           });
         }
-      } catch (parseError) {
-        console.error('Failed to parse metadata JSON output:', parseError);
-        return res.status(500).json({ error: 'Falha ao processar os metadados do vídeo.' });
+      } catch (parseError: any) {
+        console.error('[LOGGER-SERVER] Failed to parse metadata JSON output:', parseError.message);
+        console.error('[LOGGER-SERVER] Raw stdout stdout text content was:', stdout);
+        return res.status(500).json({ 
+          error: 'Falha ao processar os metadados do vídeo. Resposta do yt-dlp não pôde ser interpretada como JSON.',
+          details: parseError.message,
+          rawOutput: stdout.substring(0, 1000)
+        });
       }
     });
   } catch (error: any) {
@@ -363,6 +390,8 @@ app.post('/api/analyze', async (req, res) => {
  */
 app.post('/api/download', (req, res) => {
   const { url, format, selectedVideos, title, cookies } = req.body;
+  
+  console.log(`[LOGGER-SERVER] New download job requested -> format: "${format}", isPlaylist: ${Array.isArray(selectedVideos) && selectedVideos.length > 0}, URL: "${url}"`);
   
   if (!url || !format) {
     return res.status(400).json({ error: 'URL e formato de download são obrigatórios.' });
@@ -437,9 +466,12 @@ app.get('/api/progress/:id', (req, res) => {
   const jobId = req.params.id;
   const job = jobs.get(jobId);
   
+  console.log(`[LOGGER-SERVER] Client initiating Server-Sent Events (SSE) connection for process: ${jobId}`);
+  
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering on Nginx/Render/proxies
   res.flushHeaders();
   
   if (!job) {
@@ -477,14 +509,56 @@ app.get('/api/file/:id', (req, res) => {
   const jobId = req.params.id;
   const job = jobs.get(jobId);
   
-  if (!job || !job.filePath || !fs.existsSync(job.filePath)) {
+  console.log(`[LOGGER-SERVER] File retrieval request for jobId: "${jobId}"`);
+  
+  if (!job) {
+    console.error(`[LOGGER-SERVER] Job "${jobId}" was not found in active in-memory tracker.`);
+    return res.status(404).json({ error: 'Processo de download não encontrado no servidor.' });
+  }
+
+  console.log(`[LOGGER-SERVER] Job details resolved -> title: "${job.title}", status: "${job.status}", filePath: "${job.filePath || 'none'}", fileName: "${job.fileName || 'none'}"`);
+
+  if (!job.filePath) {
+    console.error(`[LOGGER-SERVER] Job "${jobId}" has no valid filePath defined.`);
+    return res.status(404).json({ error: 'Caminho de ficheiro inválido para este download.' });
+  }
+
+  const fileExists = fs.existsSync(job.filePath);
+  console.log(`[LOGGER-SERVER] Checking file on disc at "${job.filePath}" -> Exists: ${fileExists}`);
+
+  if (!fileExists) {
+    console.error(`[LOGGER-SERVER] File not found on disc at "${job.filePath}". Checking directory contents...`);
+    try {
+      const parentDir = path.dirname(job.filePath);
+      if (fs.existsSync(parentDir)) {
+        const files = fs.readdirSync(parentDir);
+        console.warn(`[LOGGER-SERVER] Contents of directory "${parentDir}":`, files);
+      } else {
+        console.warn(`[LOGGER-SERVER] Parent directory "${parentDir}" does not exist either.`);
+      }
+    } catch (dirErr: any) {
+      console.error(`[LOGGER-SERVER] Failed to read directory contents:`, dirErr.message);
+    }
     return res.status(404).json({ error: 'Ficheiro não encontrado ou expirou no servidor.' });
   }
-  
-  console.log(`Serving file download: ${job.filePath}`);
+
+  try {
+    const stats = fs.statSync(job.filePath);
+    const sizeMb = (stats.size / (1024 * 1024)).toFixed(2);
+    console.log(`[LOGGER-SERVER] Serving physical file: "${job.filePath}" (${sizeMb} MB) as dynamic download name: "${job.fileName}"`);
+    
+    // Explicitly set headers to avoid buffering or caching during download
+    res.setHeader('Content-Length', stats.size);
+    res.setHeader('Cache-Control', 'no-cache');
+  } catch (statErr: any) {
+    console.error(`[LOGGER-SERVER] Could not resolve stats for file:`, statErr.message);
+  }
+
   res.download(job.filePath, job.fileName, (err) => {
     if (err) {
-      console.error(`Failed to completely stream file ${job.filePath}:`, err);
+      console.error(`[LOGGER-SERVER] Failed or interrupted inside Express stream for file "${job.filePath}":`, err);
+    } else {
+      console.log(`[LOGGER-SERVER] File transfer completed successfully for jobId: "${jobId}"`);
     }
   });
 });
