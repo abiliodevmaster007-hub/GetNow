@@ -1,0 +1,6 @@
+{
+  "name": "GetNow",
+  "description": "Downloader de Vídeos e Playlists do YouTube com conversão e progresso em tempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
