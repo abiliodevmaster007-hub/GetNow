@@ -3,20 +3,17 @@ import {
   Download, 
   Youtube, 
   Search, 
-  Check, 
   Trash2, 
   RefreshCw, 
   Sparkles, 
   Sun, 
   Moon, 
   FileVideo, 
-  FileAudio, 
   Layers, 
   CheckSquare, 
   Square, 
   AlertCircle, 
   ExternalLink,
-  Github,
   Play,
   CheckCircle2,
   ListRestart,
@@ -54,6 +51,45 @@ interface HistoryItem {
   progress: number;
   fileName?: string;
   timestamp: number;
+}
+
+interface DownloadPayload {
+  url: string;
+  format: string;
+  title: string;
+  cookies?: string;
+  selectedVideos?: PlaylistItem[];
+}
+
+interface ProcessResponse {
+  jobId: string;
+  error?: string;
+}
+
+interface ExtractResponse {
+  type: 'single' | 'playlist';
+  id: string;
+  title: string;
+  channel?: string;
+  duration?: string;
+  durationSec?: number;
+  thumbnail: string;
+  url: string;
+  totalVideos?: number;
+  entries?: PlaylistItem[];
+  error?: string;
+}
+
+// Utility to extract 11-char YouTube ID to prevent embed failures on non-standard entry IDs
+function getYouTubeId(input: string): string {
+  if (!input) return '';
+  const trimmed = input.trim();
+  if (trimmed.length === 11 && !trimmed.includes('/') && !trimmed.includes('.')) {
+    return trimmed;
+  }
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+  const match = trimmed.match(regExp);
+  return (match && match[2].length === 11) ? match[2] : trimmed;
 }
 
 export default function App() {
@@ -272,15 +308,15 @@ export default function App() {
 
       console.log(`[LOGGER-CLIENT] Response received. HTTP status: ${response.status} (${response.statusText})`);
 
-      let data: any;
+      let data: ExtractResponse | null = null;
       const contentType = response.headers.get('content-type');
       if (contentType && contentType.includes('application/json')) {
         try {
-          data = await response.json();
+          data = await response.json() as ExtractResponse;
           console.log(`[LOGGER-CLIENT] Successfully parsed response JSON payload:`, data);
         } catch (jsonErr: any) {
           console.error(`[LOGGER-CLIENT] JSON decoding crash: ${jsonErr.message}`);
-          data = { error: 'O servidor retornou um JSON incompleto ou corrompido.' };
+          data = { error: 'O servidor retornou um JSON incompleto ou corrompido.' } as ExtractResponse;
         }
       } else {
         const text = await response.text();
@@ -291,9 +327,10 @@ export default function App() {
         throw new Error(cleanText || `Resposta inválida do servidor (Código: ${response.status})`);
       }
 
-      if (!response.ok) {
-        console.error(`[LOGGER-CLIENT] Analysis failed on backend: "${data.error || 'Unknown Error'}"`);
-        throw new Error(data.error || 'Não foi possível analisar o URL do YouTube.');
+      if (!response.ok || !data) {
+        const errorMsg = data?.error || 'Não foi possível analisar o URL do YouTube.';
+        console.error(`[LOGGER-CLIENT] Analysis failed on backend: "${errorMsg}"`);
+        throw new Error(errorMsg);
       }
 
       console.log(`[LOGGER-CLIENT] Metadata successfully indexed. Asset title: "${data.title}", Type: "${data.type}"`);
@@ -307,6 +344,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error(err);
+      setMetadata(null); // Clean stale metadata on failure to prevent stale UI info
       setUrlError(err.message || 'Ocorreu um erro ao comunicar com o servidor.');
       setStep('idle');
     }
@@ -316,7 +354,7 @@ export default function App() {
   const handleDownload = async () => {
     if (!metadata) return;
 
-    let payload: any = {
+    const payload: DownloadPayload = {
       url: metadata.url,
       format: selectedFormat,
       title: metadata.title,
@@ -339,13 +377,13 @@ export default function App() {
         body: JSON.stringify(payload)
       });
 
-      let data: any;
+      let data: ProcessResponse | null = null;
       const contentType = response.headers.get('content-type');
       if (contentType && contentType.includes('application/json')) {
         try {
-          data = await response.json();
+          data = await response.json() as ProcessResponse;
         } catch (_) {
-          data = { error: 'O servidor retornou uma resposta de download corrompida.' };
+          data = { error: 'O servidor retornou uma resposta de download corrompida.' } as ProcessResponse;
         }
       } else {
         const text = await response.text();
@@ -355,8 +393,8 @@ export default function App() {
         throw new Error(cleanText || `Resposta inválida do servidor (Código: ${response.status})`);
       }
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Falha ao processar o seu pedido de download.');
+      if (!response.ok || !data) {
+        throw new Error(data?.error || 'Falha ao processar o seu pedido de download.');
       }
 
       const newId = data.jobId;
@@ -368,19 +406,24 @@ export default function App() {
         eta: '---'
       });
 
-      // Insert fresh entry into session history stack in pending mode
-      setHistory(prev => [
-        {
-          id: newId,
-          title: metadata.title,
-          format: selectedFormat,
-          type: metadata.type,
-          status: 'analyzing',
-          progress: 0,
-          timestamp: Date.now()
-        },
-        ...prev
-      ]);
+      // Insert fresh entry into session history stack in pending mode (shielding duplicates)
+      setHistory(prev => {
+        if (prev.some(item => item.id === newId)) {
+          return prev;
+        }
+        return [
+          {
+            id: newId,
+            title: metadata.title,
+            format: selectedFormat,
+            type: metadata.type,
+            status: 'analyzing',
+            progress: 0,
+            timestamp: Date.now()
+          },
+          ...prev
+        ];
+      });
     } catch (err: any) {
       alert(err.message || 'Erro ao iniciar o processo de download.');
     }
@@ -487,6 +530,7 @@ export default function App() {
               isDarkMode ? 'bg-white/5 border-white/10 hover:bg-white/10 text-yellow-400' : 'bg-gray-100 border-gray-200 hover:bg-gray-200 text-violet-700'
             }`}
             title={isDarkMode ? "Ativar Modo Claro" : "Ativar Modo Escuro"}
+            aria-label={isDarkMode ? "Ativar Modo Claro" : "Ativar Modo Escuro"}
             id="getnow-theme-toggle"
           >
             {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -669,16 +713,36 @@ export default function App() {
                   <p className="text-xs font-mono font-bold text-gray-400">ID: {activeJobId}</p>
                 </div>
                 
-                <span className={`px-2.5 py-1 rounded text-[10px] uppercase font-bold tracking-widest animate-pulse ${
-                  activeJobProgress.status === 'downloading' ? 'bg-green-500/20 text-green-500' :
-                  activeJobProgress.status === 'processing' ? 'bg-amber-500/20 text-amber-500' :
-                  activeJobProgress.status === 'completed' ? 'bg-blue-500/20 text-blue-500' : 'bg-gray-500/20 text-gray-400'
-                }`}>
-                  {activeJobProgress.status === 'analyzing' ? 'A Analisar…' :
-                   activeJobProgress.status === 'processing' ? 'A Processar…' :
-                   activeJobProgress.status === 'downloading' ? 'A Baixar…' :
-                   activeJobProgress.status === 'completed' ? 'Concluído' : 'Erro'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={`px-2.5 py-1 rounded text-[10px] uppercase font-bold tracking-widest ${
+                    activeJobProgress.status === 'completed' || activeJobProgress.status === 'error' ? '' : 'animate-pulse'
+                  } ${
+                    activeJobProgress.status === 'downloading' ? 'bg-green-500/20 text-green-500' :
+                    activeJobProgress.status === 'processing' ? 'bg-amber-500/20 text-amber-500' :
+                    activeJobProgress.status === 'completed' ? 'bg-blue-500/20 text-blue-500' : 'bg-gray-500/20 text-gray-400'
+                  }`}>
+                    {activeJobProgress.status === 'analyzing' ? 'A Analisar…' :
+                     activeJobProgress.status === 'processing' ? 'A Processar…' :
+                     activeJobProgress.status === 'downloading' ? 'A Baixar…' :
+                     activeJobProgress.status === 'completed' ? 'Concluído' : 'Erro'}
+                  </span>
+
+                  {(activeJobProgress.status === 'completed' || activeJobProgress.status === 'error') && (
+                    <button 
+                      onClick={() => {
+                        setActiveJobId(null);
+                        setActiveJobProgress(null);
+                      }}
+                      className={`p-1 rounded-lg transition-colors ${
+                        isDarkMode ? 'hover:bg-white/10 text-gray-400 hover:text-white' : 'hover:bg-gray-100 text-gray-500 hover:text-black'
+                      }`}
+                      title="Fechar monitor"
+                      aria-label="Limpar monitoramento de download"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Title & info list */}
@@ -798,7 +862,7 @@ export default function App() {
                       </div>
 
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs font-bold truncate text-gray-200" title={item.title}>
+                        <p className={`text-xs font-bold truncate ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`} title={item.title}>
                           {item.title}
                         </p>
                         <p className="text-[10px] text-gray-500 flex items-center gap-1.5 mt-0.5">
@@ -866,7 +930,7 @@ export default function App() {
               <div className="w-16 h-16 rounded-full bg-red-600/10 flex items-center justify-center text-[#FF0000] mb-4">
                 <Youtube className="w-8 h-8" />
               </div>
-              <h3 className="text-lg font-bold text-gray-200 mb-2">Configure o Download para Iniciar</h3>
+              <h3 className={`text-lg font-bold mb-2 ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>Configure o Download para Iniciar</h3>
               <p className="text-sm max-w-md mx-auto leading-relaxed">
                 Insira o link de qualquer vídeo ou playlist do YouTube na caixa de entrada à esquerda e clique em <strong>"Analisar"</strong> para indexar seus formatos disponíveis e tamanho do ficheiro.
               </p>
@@ -1012,7 +1076,7 @@ export default function App() {
                       </div>
                       
                       <div className="max-h-[220px] overflow-y-auto px-4 divide-y divide-white/5" id="playlist-scroller">
-                        {metadata.entries.map((item, idx) => {
+                        {(metadata.entries || []).map((item, idx) => {
                           const isChecked = selectedVideoIds.includes(item.id);
                           return (
                             <div 
@@ -1205,6 +1269,7 @@ export default function App() {
                   isDarkMode ? 'text-gray-400 hover:text-white hover:bg-white/5' : 'text-gray-500 hover:text-black hover:bg-gray-100'
                 }`}
                 title="Fechar reprodutor"
+                aria-label="Fechar reprodutor de vídeo"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1212,7 +1277,7 @@ export default function App() {
             {/* Embed Video Iframe window wrapper */}
             <div className="w-full aspect-video bg-black relative">
               <iframe 
-                src={`https://www.youtube.com/embed/${previewVideoId}?autoplay=1`} 
+                src={`https://www.youtube.com/embed/${getYouTubeId(previewVideoId)}?autoplay=1`} 
                 title="Reprodutor YouTube GetNow"
                 className="w-full h-full border-0 absolute inset-0"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
