@@ -63,6 +63,24 @@ export default function App() {
   const [urlInput, setUrlInput] = useState('');
   const [urlError, setUrlError] = useState('');
   
+  // YouTube Cookies and advanced drawer settings
+  const [youtubeCookies, setYoutubeCookies] = useState<string>(() => {
+    try {
+      return localStorage.getItem('getnow_youtube_cookies2') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [showCookies, setShowCookies] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('getnow_youtube_cookies2', youtubeCookies);
+    } catch (err) {
+      console.error('Failed to keep cookies in local storage:', err);
+    }
+  }, [youtubeCookies]);
+
   // App primary loading states
   const [step, setStep] = useState<'idle' | 'analyzing' | 'ready'>('idle');
   const [loadingMsg, setLoadingMsg] = useState('');
@@ -236,10 +254,24 @@ export default function App() {
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: urlInput.trim() })
+        body: JSON.stringify({ url: urlInput.trim(), cookies: youtubeCookies })
       });
 
-      const data = await response.json();
+      let data: any;
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        try {
+          data = await response.json();
+        } catch (_) {
+          data = { error: 'O servidor retornou um JSON incompleto ou corrompido.' };
+        }
+      } else {
+        const text = await response.text();
+        const cleanText = (text.includes('<html') || text.includes('<!DOCTYPE') || text.includes('<div'))
+          ? `O servidor retornou uma resposta HTML em vez de JSON (Status: ${response.status}). O serviço no Render poderá estar temporariamente sobrecarregado ou a reiniciar. Por favor, tente novamente.`
+          : text;
+        data = { error: cleanText || `Resposta inválida do servidor (Código: ${response.status})` };
+      }
 
       if (!response.ok) {
         throw new Error(data.error || 'Não foi possível analisar o URL do YouTube.');
@@ -266,7 +298,8 @@ export default function App() {
     let payload: any = {
       url: metadata.url,
       format: selectedFormat,
-      title: metadata.title
+      title: metadata.title,
+      cookies: youtubeCookies
     };
 
     if (metadata.type === 'playlist') {
@@ -285,7 +318,21 @@ export default function App() {
         body: JSON.stringify(payload)
       });
 
-      const data = await response.json();
+      let data: any;
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        try {
+          data = await response.json();
+        } catch (_) {
+          data = { error: 'O servidor retornou uma resposta de download corrompida.' };
+        }
+      } else {
+        const text = await response.text();
+        const cleanText = (text.includes('<html') || text.includes('<!DOCTYPE') || text.includes('<div'))
+          ? `O servidor retornou uma resposta de erro HTML em vez de JSON (Status: ${response.status}). O serviço no Render poderá estar a reiniciar ou ocupado. Recarregue a página antes de tentar de novo.`
+          : text;
+        data = { error: cleanText || `Resposta inválida do servidor (Código: ${response.status})` };
+      }
 
       if (!response.ok) {
         throw new Error(data.error || 'Falha ao processar o seu pedido de download.');
@@ -508,6 +555,83 @@ export default function App() {
                 </span>
               )}
             </p>
+          </div>
+
+          {/* Bypassing & YouTube Cookies Setup Card */}
+          <div className={`p-5 rounded-2xl border transition-all ${
+            isDarkMode ? 'bg-[#1a1a1a] border-white/10' : 'bg-white border-gray-200 shadow-sm'
+          }`} id="getnow-cookies-settings">
+            <button
+              onClick={() => setShowCookies(!showCookies)}
+              className="w-full flex items-center justify-between text-left focus:outline-none"
+            >
+              <div className="flex items-center gap-3">
+                <Youtube className="w-5 h-5 text-[#FF0000]" />
+                <div>
+                  <h3 className="text-xs font-bold uppercase tracking-widest text-[#FF0000]">
+                    Bypass / Cookies do YouTube
+                  </h3>
+                  <p className="text-[10px] text-gray-400 mt-0.5">
+                    {youtubeCookies.trim() ? "🟢 Cookies carregados e ativos" : "⚪ Opcional - Evita bloqueio do YouTube"}
+                  </p>
+                </div>
+              </div>
+              <span className={`text-xs px-2.5 py-1 rounded bg-black/20 hover:text-white transition-colors font-mono ${
+                isDarkMode ? 'text-gray-400' : 'text-gray-600'
+              }`}>
+                {showCookies ? 'Fechar' : 'Configurar'}
+              </span>
+            </button>
+
+            {showCookies && (
+              <div className="mt-4 pt-4 border-t border-white/5 space-y-3 animate-fade-in">
+                <p className={`text-[11px] leading-relaxed ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  Caso se depare com o erro <strong>"Sign in to confirm you’re not a bot"</strong>, cole aqui os seus cookies em formato <strong>Netscape (cookies.txt)</strong>. Eles serão guardados localmente no seu navegador e enviados com segurança.
+                </p>
+                <div className="text-[11px] space-y-1 text-gray-400">
+                  <span className="font-bold underline text-gray-300 block">Como obter os cookies:</span>
+                  <ol className="list-decimal pl-4 space-y-0.5 leading-snug">
+                    <li>Instale a extensão <a href="https://chromewebstore.google.com/detail/get-cookiestxt-locally/ccmclcmhboolgcheofeponpcgfghgjon" target="_blank" rel="noreferrer" className="text-red-500 hover:underline inline-flex items-center gap-0.5">Get cookies.txt LOCALLY<ExternalLink className="w-2.5 h-2.5" /></a> ou similar no Chrome/Firefox.</li>
+                    <li>Aceda ao <a href="https://youtube.com" target="_blank" rel="noreferrer" className="text-red-500 hover:underline inline-flex items-center gap-0.5">youtube.com<ExternalLink className="w-2.5 h-2.5" /></a> no seu navegador e faça login (se necessário).</li>
+                    <li>Abra a extensão, copie todo o texto e cole no campo abaixo.</li>
+                  </ol>
+                </div>
+                <textarea
+                  placeholder="# Netscape HTTP Cookie File&#10;# http://curl.haxx.se/rfc/cookie_spec.html&#10;.youtube.com	TRUE	/	TRUE	1718731331	__Secure-3PSID	..."
+                  value={youtubeCookies}
+                  onChange={(e) => setYoutubeCookies(e.target.value)}
+                  rows={4}
+                  className={`w-full border rounded-xl p-3 focus:outline-none focus:ring-1 focus:ring-red-600 text-[11px] font-mono transition-all ${
+                    isDarkMode 
+                      ? 'bg-[#111] border-white/10 text-gray-300 placeholder-gray-700' 
+                      : 'bg-gray-50 border-gray-300 text-gray-800 placeholder-gray-400'
+                  }`}
+                />
+                
+                <div className="flex gap-2">
+                  {youtubeCookies.trim() && (
+                    <button
+                      onClick={() => {
+                        setYoutubeCookies('');
+                        alert('Cookies removidos com sucesso.');
+                      }}
+                      className="px-3 py-2 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-500 text-[10px] font-semibold transition-all"
+                    >
+                      Limpar Cookies
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      alert('Cookies guardados localmente com sucesso! Serão fornecidos de forma segura no próximo download.');
+                      setShowCookies(false);
+                    }}
+                    className="flex-1 px-3 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-[10px] font-bold text-center transition-all"
+                  >
+                    Guardar e Aplicar
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Active Download Progress Monitor card */}

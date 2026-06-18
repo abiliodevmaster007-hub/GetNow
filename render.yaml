@@ -1,0 +1,15 @@
+# Render Blueprint Configuration
+# Learn more at https://render.com/docs/blueprints
+services:
+  - type: web
+    name: getnow-downloader
+    env: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    region: oregon # Can be changed according to user preferences
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+      # Insert additional secret environment variables like GEMINI_API_KEY if desired in Render Dashboard

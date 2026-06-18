@@ -41,6 +41,7 @@ interface DownloadJob {
   completedVideos?: number;
   currentVideoTitle?: string;
   createdAt: number;
+  cookiesFile?: string;
 }
 
 const jobs = new Map<string, DownloadJob>();
@@ -144,6 +145,11 @@ function cleanupJob(jobId: string) {
     if (fs.existsSync(zipPath)) {
       fs.unlinkSync(zipPath);
     }
+
+    if (job.cookiesFile && fs.existsSync(job.cookiesFile)) {
+      fs.unlinkSync(job.cookiesFile);
+      console.log(`Wiped download job cookies file: ${job.cookiesFile}`);
+    }
   } catch (err) {
     console.error(`Failed to completely wipe directories for job ${jobId}:`, err);
   }
@@ -203,7 +209,7 @@ const ytdlpInitPromise = ensureYtdlp();
  * Fetches youtube video metadata using yt-dlp using flat-playlist or full query options
  */
 app.post('/api/analyze', async (req, res) => {
-  const { url } = req.body;
+  const { url, cookies } = req.body;
   if (!url) {
     return res.status(400).json({ error: 'É necessário fornecer um URL do YouTube.' });
   }
@@ -213,6 +219,21 @@ app.post('/api/analyze', async (req, res) => {
     return res.status(400).json({ error: 'URL inválido. Insira um link válido do YouTube.' });
   }
   
+  // Conditionally write cookies txt file
+  let cookiesPath = '';
+  if (cookies && typeof cookies === 'string' && cookies.trim()) {
+    try {
+      if (!fs.existsSync(TMP_DIR)) {
+        fs.mkdirSync(TMP_DIR, { recursive: true });
+      }
+      cookiesPath = path.join(TMP_DIR, `cookies_analyze_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.txt`);
+      fs.writeFileSync(cookiesPath, cookies.trim(), 'utf8');
+      console.log(`Temporary cookies written to ${cookiesPath} for analysis`);
+    } catch (cookieErr) {
+      console.error('Failed to write temporary cookies file:', cookieErr);
+    }
+  }
+
   try {
     console.log(`Analyzing YouTube link: ${url}`);
     
@@ -225,8 +246,23 @@ app.post('/api/analyze', async (req, res) => {
       '--no-cache-dir',
       '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       '--extractor-args', 'youtube:player_client=android,ios',
-      url
     ];
+
+    if (cookiesPath) {
+      args.push('--cookies', cookiesPath);
+    }
+
+    args.push(url);
+
+    // Dynamic clean-up callback
+    const cleanupCookies = () => {
+      if (cookiesPath && fs.existsSync(cookiesPath)) {
+        try {
+          fs.unlinkSync(cookiesPath);
+          console.log(`Temporary cookies file wiped: ${cookiesPath}`);
+        } catch (_) {}
+      }
+    };
     
     const child = spawn(YTDLP_PATH, args);
     let stdout = '';
@@ -243,6 +279,7 @@ app.post('/api/analyze', async (req, res) => {
     child.on('error', (err) => {
       console.error('Failed to start yt-dlp child process:', err);
       completed = true;
+      cleanupCookies();
       if (!res.headersSent) {
         return res.status(500).json({ 
           error: `Não foi possível iniciar o motor de download (yt-dlp). Detalhes: ${err.message}. Certifique-se de que o Python está instalado e configurado no servidor.` 
@@ -251,6 +288,7 @@ app.post('/api/analyze', async (req, res) => {
     });
     
     child.on('close', (code) => {
+      cleanupCookies();
       if (completed) return;
       completed = true;
       
@@ -324,7 +362,7 @@ app.post('/api/analyze', async (req, res) => {
  * Launches download background job
  */
 app.post('/api/download', (req, res) => {
-  const { url, format, selectedVideos, title } = req.body;
+  const { url, format, selectedVideos, title, cookies } = req.body;
   
   if (!url || !format) {
     return res.status(400).json({ error: 'URL e formato de download são obrigatórios.' });
@@ -342,6 +380,21 @@ app.post('/api/download', (req, res) => {
   
   const jobId = Math.random().toString(36).substring(2, 11);
   const isPlaylist = Array.isArray(selectedVideos) && selectedVideos.length > 0;
+
+  // Conditionally write cookies txt file for downloads
+  let cookiesPath = '';
+  if (cookies && typeof cookies === 'string' && cookies.trim()) {
+    try {
+      if (!fs.existsSync(TMP_DIR)) {
+        fs.mkdirSync(TMP_DIR, { recursive: true });
+      }
+      cookiesPath = path.join(TMP_DIR, `cookies_download_${jobId}.txt`);
+      fs.writeFileSync(cookiesPath, cookies.trim(), 'utf8');
+      console.log(`Job ${jobId} temporary download cookies stored at ${cookiesPath}`);
+    } catch (cookieErr) {
+      console.error('Failed to write download job cookies file:', cookieErr);
+    }
+  }
   
   const job: DownloadJob = {
     id: jobId,
@@ -353,7 +406,8 @@ app.post('/api/download', (req, res) => {
     speed: '---',
     eta: '---',
     title: title || (isPlaylist ? 'Download de Playlist' : 'Download de Vídeo'),
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    cookiesFile: cookiesPath || undefined
   };
   
   if (isPlaylist) {
@@ -499,6 +553,10 @@ async function processDownload(job: DownloadJob, selectedVideos?: any[]) {
     '--extractor-args', 'youtube:player_client=android,ios',
     '--no-warnings'
   ];
+
+  if (job.cookiesFile) {
+    bypassFlags.push('--cookies', job.cookiesFile);
+  }
   
   if (job.type === 'single') {
     job.status = 'downloading';
